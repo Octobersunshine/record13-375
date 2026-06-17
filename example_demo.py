@@ -106,7 +106,7 @@ def demo_2d_array():
 
 def demo_variance_stabilizer():
     print("\n" + "=" * 70)
-    print("示例 4: 方差稳定化评估".center(70))
+    print("示例 4: 变换效果综合评估".center(70))
     print("=" * 70)
 
     n = 2000
@@ -118,17 +118,50 @@ def demo_variance_stabilizer():
     data = np.abs(data) + 0.01
 
     stabilizer = VarianceStabilizer()
-    results = stabilizer.evaluate(data, bins=10)
+    stabilizer.evaluate(data, bins=10)
 
-    print("\n" + stabilizer.summary())
+    print("\n--- 完整评估摘要 ---")
+    print(stabilizer.summary(mode='full'))
 
-    best_method, _ = stabilizer.get_best_method()
-    print(f"\n推荐使用的变换方法: {best_method}")
+    print("\n--- 正态化评估摘要 ---")
+    print(stabilizer.summary(mode='normality'))
 
-    transformer = DataTransformer()
-    best_data = transformer.fit_transform(data, best_method)
-    print(f"\n使用 {best_method} 变换后的统计:")
-    print(f"  变异系数: {np.std(best_data, ddof=1) / np.mean(best_data):.6f}")
+    print("\n--- 方差稳定化评估摘要 ---")
+    print(stabilizer.summary(mode='variance'))
+
+    print("\n--- 变换前后对比表 ---")
+    print(stabilizer.comparison_table())
+
+    print("\n--- 智能推荐 ---")
+    for goal in ['normality', 'variance_stability', 'all']:
+        rec = stabilizer.recommend(goal=goal)
+        print(f"\n目标 [{goal}]:")
+        print(f"  推荐方法: {rec['recommended_method']}")
+        print(f"  说明: {rec['details']}")
+
+
+def demo_skewness_kurtosis_comparison():
+    print("\n" + "=" * 70)
+    print("示例 8: 偏度峰度变换效果对比".center(70))
+    print("=" * 70)
+
+    data_sets = {
+        '对数正态分布': np.random.lognormal(mean=0.5, sigma=0.8, size=2000),
+        '指数分布': np.random.exponential(scale=2.0, size=2000) + 0.1,
+        '卡方分布(df=3)': np.random.chisquare(df=3, size=2000) + 0.1,
+    }
+
+    for name, data in data_sets.items():
+        print(f"\n{name} (n={len(data)}):")
+        print(f"  原始偏度: {_skewness(data):.4f}, 原始峰度: {_kurtosis(data):.4f}")
+
+        stabilizer = VarianceStabilizer()
+        stabilizer.evaluate(data, bins=10)
+
+        rec = stabilizer.recommend(goal='normality')
+        print(f"  最佳正态化变换: {rec['recommended_method']}")
+        print(f"  变换后偏度: {rec['skewness']:.4f}, 变换后峰度: {rec['kurtosis']:.4f}")
+        print(f"  正态得分: {rec['score']:.4f} (越低越接近正态)")
 
 
 def demo_utility_functions():
@@ -253,4 +286,5 @@ if __name__ == '__main__':
     demo_utility_functions()
     demo_edge_cases()
     demo_log_with_negative_data()
+    demo_skewness_kurtosis_comparison()
     print("\n所有示例执行完成！")

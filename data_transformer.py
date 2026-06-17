@@ -312,7 +312,7 @@ class VarianceStabilizer:
 
     @staticmethod
     def _calc_variance_stability(sorted_data: np.ndarray, bins: int, bin_size: int) -> dict:
-        """计算分箱后的均值和方差。"""
+        """计算分箱后的均值和方差，以及偏度峰度等统计量。"""
         means = []
         variances = []
         for i in range(bins):
@@ -348,6 +348,10 @@ class VarianceStabilizer:
         else:
             cv = np.nan
 
+        skewness = VarianceStabilizer._calc_skewness(sorted_data)
+        kurtosis = VarianceStabilizer._calc_kurtosis(sorted_data)
+        normality_score = VarianceStabilizer._calc_normality_score(skewness, kurtosis)
+
         return {
             'bin_means': means.tolist(),
             'bin_variances': variances.tolist(),
@@ -355,14 +359,64 @@ class VarianceStabilizer:
             'coefficient_of_variation': float(cv) if np.isfinite(cv) else 1e10,
             'overall_mean': float(np.mean(sorted_data)),
             'overall_variance': float(np.var(sorted_data, ddof=1)),
+            'overall_std': float(np.std(sorted_data, ddof=1)),
+            'skewness': float(skewness),
+            'kurtosis': float(kurtosis),
+            'normality_score': float(normality_score),
         }
 
-    def get_best_method(self, metric: str = 'variance_mean_slope') -> Tuple[str, dict]:
+    @staticmethod
+    def _calc_skewness(data: np.ndarray) -> float:
+        """计算偏度（Pearson 偏度系数）。"""
+        data = np.asarray(data, dtype=np.float64)
+        n = len(data)
+        if n < 3:
+            return 0.0
+        mean = np.mean(data)
+        std = np.std(data, ddof=1)
+        if std < 1e-15:
+            return 0.0
+        skew = np.sum(((data - mean) / std) ** 3) * n / ((n - 1) * (n - 2))
+        return float(skew)
+
+    @staticmethod
+    def _calc_kurtosis(data: np.ndarray) -> float:
+        """计算超额峰度（减去 3，正态分布为 0）。"""
+        data = np.asarray(data, dtype=np.float64)
+        n = len(data)
+        if n < 4:
+            return 0.0
+        mean = np.mean(data)
+        std = np.std(data, ddof=1)
+        if std < 1e-15:
+            return 0.0
+        kurt = (np.sum(((data - mean) / std) ** 4) * n * (n + 1)
+                / ((n - 1) * (n - 2) * (n - 3))
+                - 3.0 * (n - 1) ** 2 / ((n - 2) * (n - 3)))
+        return float(kurt)
+
+    @staticmethod
+    def _calc_normality_score(skewness: float, kurtosis: float) -> float:
+        """
+        计算正态性综合得分。
+
+        得分基于偏度和峰度偏离正态分布（0, 0）的程度。
+        得分越低表示越接近正态分布。
+        公式：sqrt(skew^2 + (kurt/2)^2)
+        """
+        return float(np.sqrt(skewness ** 2 + (kurtosis / 2.0) ** 2))
+
+    def get_best_method(self, metric: str = 'normality_score') -> Tuple[str, dict]:
         """
         获取最佳变换方法。
 
         Args:
-            metric: 评估指标，'variance_mean_slope' 或 'coefficient_of_variation'
+            metric: 评估指标，可选值:
+                - 'normality_score': 正态性综合得分（默认，越低越好）
+                - 'variance_mean_slope': 方差-均值斜率（越接近0越好）
+                - 'coefficient_of_variation': 变异系数（越低越好）
+                - 'skewness': 偏度绝对值（越低越好）
+                - 'kurtosis': 峰度绝对值（越低越好）
 
         Returns:
             (最佳方法名称, 该方法的评估结果)
@@ -370,43 +424,275 @@ class VarianceStabilizer:
         if not self.results_:
             raise ValueError("请先调用 evaluate() 方法进行评估")
 
+        valid_metrics = {
+            'normality_score', 'variance_mean_slope',
+            'coefficient_of_variation', 'skewness', 'kurtosis'
+        }
+        if metric not in valid_metrics:
+            raise ValueError(
+                f"不支持的评估指标: {metric}。可选值: {sorted(valid_metrics)}"
+            )
+
         best_method = 'original'
         best_score = float('inf')
 
         for method, result in self.results_.items():
             if 'error' in result:
                 continue
-            score = abs(result[metric])
+            if metric == 'variance_mean_slope':
+                score = abs(result[metric])
+            elif metric in {'skewness', 'kurtosis'}:
+                score = abs(result[metric])
+            else:
+                score = result[metric]
+
             if score < best_score:
                 best_score = score
                 best_method = method
 
         return best_method, self.results_[best_method]
 
-    def summary(self) -> str:
-        """生成评估结果摘要。"""
+    def recommend(self, goal: str = 'normality') -> dict:
+        """
+        智能推荐最佳变换方案。
+
+        Args:
+            goal: 优化目标，可选值:
+                - 'normality': 正态化（使数据更接近正态分布，默认）
+                - 'variance_stability': 方差稳定化
+                - 'all': 综合评估所有维度
+
+        Returns:
+            推荐结果字典，包含最佳方法及详细说明
+        """
+        if not self.results_:
+            raise ValueError("请先调用 evaluate() 方法进行评估")
+
+        if goal == 'normality':
+            method, result = self.get_best_method('normality_score')
+            return {
+                'recommended_method': method,
+                'goal': 'normality',
+                'score': result['normality_score'],
+                'skewness': result['skewness'],
+                'kurtosis': result['kurtosis'],
+                'details': f"基于正态性得分推荐 {method} 变换，得分 {result['normality_score']:.4f}（越低越接近正态）",
+                'transformer_params': result.get('transformer', {}),
+            }
+        elif goal == 'variance_stability':
+            method, result = self.get_best_method('variance_mean_slope')
+            return {
+                'recommended_method': method,
+                'goal': 'variance_stability',
+                'score': result['variance_mean_slope'],
+                'coefficient_of_variation': result['coefficient_of_variation'],
+                'details': f"基于方差稳定化推荐 {method} 变换，斜率 {result['variance_mean_slope']:.4f}（越接近0越稳定）",
+                'transformer_params': result.get('transformer', {}),
+            }
+        elif goal == 'all':
+            rankings = {}
+            metrics = ['normality_score', 'variance_mean_slope', 'coefficient_of_variation']
+
+            for method, result in self.results_.items():
+                if 'error' in result:
+                    continue
+                rank_sum = 0
+                for metric in metrics:
+                    if metric == 'variance_mean_slope':
+                        score = abs(result[metric])
+                    else:
+                        score = result[metric]
+                    all_scores = [
+                        abs(r[metric]) if metric == 'variance_mean_slope' else r[metric]
+                        for r in self.results_.values() if 'error' not in r
+                    ]
+                    rank = sum(1 for s in all_scores if s < score) + 1
+                    rank_sum += rank
+                rankings[method] = rank_sum
+
+            best_method = min(rankings, key=rankings.get)
+            best_result = self.results_[best_method]
+            return {
+                'recommended_method': best_method,
+                'goal': 'all',
+                'rank_sum': rankings[best_method],
+                'normality_score': best_result['normality_score'],
+                'variance_mean_slope': best_result['variance_mean_slope'],
+                'coefficient_of_variation': best_result['coefficient_of_variation'],
+                'details': f"综合多维度评估推荐 {best_method} 变换（排名和：{rankings[best_method]}）",
+                'transformer_params': best_result.get('transformer', {}),
+                'all_rankings': dict(sorted(rankings.items(), key=lambda x: x[1])),
+            }
+        else:
+            raise ValueError(f"不支持的优化目标: {goal}。可选值: 'normality', 'variance_stability', 'all'")
+
+    def summary(self, mode: str = 'full') -> str:
+        """
+        生成评估结果摘要。
+
+        Args:
+            mode: 摘要模式，可选值:
+                - 'full': 完整摘要（所有指标）
+                - 'normality': 仅显示正态化相关指标
+                - 'variance': 仅显示方差稳定化相关指标
+
+        Returns:
+            格式化的摘要字符串
+        """
         if not self.results_:
             return "尚未进行评估，请调用 evaluate() 方法。"
 
-        lines = ["=" * 70, "方差稳定化评估摘要".center(70), "=" * 70]
-        lines.append(f"{'方法':<12} {'斜率(方差-均值)':<18} {'变异系数':<14} {'状态':<12}")
-        lines.append("-" * 70)
+        if mode == 'full':
+            return self._summary_full()
+        elif mode == 'normality':
+            return self._summary_normality()
+        elif mode == 'variance':
+            return self._summary_variance()
+        else:
+            raise ValueError(f"不支持的摘要模式: {mode}。可选值: 'full', 'normality', 'variance'")
+
+    def _summary_full(self) -> str:
+        """生成完整评估摘要。"""
+        lines = []
+        width = 90
+        lines.append("=" * width)
+        lines.append("数据变换效果评估摘要".center(width))
+        lines.append("=" * width)
+
+        header = (f"{'方法':<12} {'偏度':<12} {'峰度':<12} {'正态得分':<12} "
+                  f"{'方差斜率':<14} {'变异系数':<14} {'状态':<10}")
+        lines.append(header)
+        lines.append("-" * width)
 
         for method, result in self.results_.items():
             if 'error' in result:
-                lines.append(f"{method:<12} {'N/A':<18} {'N/A':<14} 失败: {result['error'][:20]}")
+                err = result['error'][:18]
+                lines.append(f"{method:<12} {'N/A':<12} {'N/A':<12} {'N/A':<12} "
+                             f"{'N/A':<14} {'N/A':<14} 失败: {err}")
+            else:
+                skew = f"{result['skewness']:.6f}"
+                kurt = f"{result['kurtosis']:.6f}"
+                norm = f"{result['normality_score']:.6f}"
+                slope = f"{result['variance_mean_slope']:.6f}"
+                cv = f"{result['coefficient_of_variation']:.6f}"
+                lines.append(f"{method:<12} {skew:<12} {kurt:<12} {norm:<12} "
+                             f"{slope:<14} {cv:<14} 成功")
+
+        lines.append("=" * width)
+
+        best_norm, _ = self.get_best_method('normality_score')
+        best_var, _ = self.get_best_method('variance_mean_slope')
+        best_cv, _ = self.get_best_method('coefficient_of_variation')
+
+        lines.append("🏆 最佳变换推荐:")
+        lines.append(f"  • 正态化最佳: {best_norm}")
+        lines.append(f"  • 方差稳定最佳: {best_var}")
+        lines.append(f"  • 变异系数最低: {best_cv}")
+        lines.append("=" * width)
+
+        return "\n".join(lines)
+
+    def _summary_normality(self) -> str:
+        """生成正态化评估摘要。"""
+        lines = []
+        width = 70
+        lines.append("=" * width)
+        lines.append("正态化效果评估摘要".center(width))
+        lines.append("=" * width)
+        lines.append(f"{'方法':<12} {'偏度':<14} {'峰度':<14} {'正态得分':<14} {'状态':<10}")
+        lines.append("-" * width)
+
+        for method, result in self.results_.items():
+            if 'error' in result:
+                err = result['error'][:18]
+                lines.append(f"{method:<12} {'N/A':<14} {'N/A':<14} {'N/A':<14} 失败: {err}")
+            else:
+                skew = f"{result['skewness']:.6f}"
+                kurt = f"{result['kurtosis']:.6f}"
+                norm = f"{result['normality_score']:.6f}"
+                lines.append(f"{method:<12} {skew:<14} {kurt:<14} {norm:<14} 成功")
+
+        lines.append("=" * width)
+        best_method, best_result = self.get_best_method('normality_score')
+        lines.append(f"🏆 最佳正态化变换: {best_method}")
+        lines.append(f"   偏度: {best_result['skewness']:.6f}  (理想值: 0)")
+        lines.append(f"   峰度: {best_result['kurtosis']:.6f}  (理想值: 0)")
+        lines.append(f"   正态得分: {best_result['normality_score']:.6f} (越低越好)")
+        lines.append("=" * width)
+
+        return "\n".join(lines)
+
+    def _summary_variance(self) -> str:
+        """生成方差稳定化评估摘要。"""
+        lines = []
+        width = 70
+        lines.append("=" * width)
+        lines.append("方差稳定化评估摘要".center(width))
+        lines.append("=" * width)
+        lines.append(f"{'方法':<12} {'方差-均值斜率':<18} {'变异系数':<14} {'状态':<10}")
+        lines.append("-" * width)
+
+        for method, result in self.results_.items():
+            if 'error' in result:
+                err = result['error'][:18]
+                lines.append(f"{method:<12} {'N/A':<18} {'N/A':<14} 失败: {err}")
             else:
                 slope = f"{result['variance_mean_slope']:.6f}"
                 cv = f"{result['coefficient_of_variation']:.6f}"
                 lines.append(f"{method:<12} {slope:<18} {cv:<14} 成功")
 
-        lines.append("=" * 70)
-        best_method, best_result = self.get_best_method()
-        lines.append(f"最佳方法: {best_method}")
-        lines.append(f"  斜率: {best_result['variance_mean_slope']:.6f}")
-        lines.append(f"  变异系数: {best_result['coefficient_of_variation']:.6f}")
-        lines.append("=" * 70)
+        lines.append("=" * width)
+        best_method, best_result = self.get_best_method('variance_mean_slope')
+        lines.append(f"🏆 最佳方差稳定变换: {best_method}")
+        lines.append(f"   方差-均值斜率: {best_result['variance_mean_slope']:.6f} (越接近0越好)")
+        lines.append(f"   变异系数: {best_result['coefficient_of_variation']:.6f}")
+        lines.append("=" * width)
 
+        return "\n".join(lines)
+
+    def comparison_table(self) -> str:
+        """
+        生成变换前后对比表。
+
+        Returns:
+            格式化的对比表字符串
+        """
+        if not self.results_:
+            return "尚未进行评估，请调用 evaluate() 方法。"
+
+        original = self.results_.get('original', {})
+        if 'error' in original:
+            return "原始数据评估失败，无法生成对比表。"
+
+        width = 78
+        lines = ["=" * width, "变换前后对比表".center(width), "=" * width]
+        lines.append(f"{'指标':<20} {'原始':<16} {'最佳变换':<16} {'改善率':<12} {'方法':<10}")
+        lines.append("-" * width)
+
+        metric_labels = [
+            ('skewness', '偏度'),
+            ('kurtosis', '峰度'),
+            ('normality_score', '正态得分'),
+            ('variance_mean_slope', '方差-均值斜率'),
+            ('coefficient_of_variation', '变异系数'),
+        ]
+
+        for metric, label in metric_labels:
+            orig_val = abs(original[metric]) if metric in {'skewness', 'kurtosis', 'variance_mean_slope'} else original[metric]
+            best_method, best_result = self.get_best_method(metric)
+            best_val = abs(best_result[metric]) if metric in {'skewness', 'kurtosis', 'variance_mean_slope'} else best_result[metric]
+
+            if orig_val > 1e-10:
+                improvement = (orig_val - best_val) / orig_val * 100
+                improvement_str = f"{improvement:+.2f}%"
+            else:
+                improvement_str = "N/A"
+
+            orig_str = f"{original[metric]:.6f}"
+            best_str = f"{best_result[metric]:.6f}"
+            lines.append(f"{label:<20} {orig_str:<16} {best_str:<16} {improvement_str:<12} {best_method:<10}")
+
+        lines.append("=" * width)
         return "\n".join(lines)
 
 
