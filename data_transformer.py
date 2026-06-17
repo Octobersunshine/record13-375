@@ -41,9 +41,12 @@ class DataTransformer:
 
         if method == 'boxcox':
             self._fit_boxcox(data, lambda_param)
+        elif method in self.VALID_LOG_BASES:
+            self._fit_log(data)
         else:
-            self._validate_input_positivity(data, method)
+            self._validate_input_constraints(data, method)
             self._lambda_ = None
+            self._shift_ = 0.0
 
         self._is_fitted_ = True
         return self
@@ -117,7 +120,7 @@ class DataTransformer:
         min_val = np.min(flat_data)
 
         if min_val <= 0:
-            self._shift_ = 1.0 - min_val if min_val <= 0 else 0.0
+            self._shift_ = 1.0 - min_val
         else:
             self._shift_ = 0.0
 
@@ -128,20 +131,35 @@ class DataTransformer:
         else:
             self._lambda_ = lambda_param
 
-    @staticmethod
-    def _ln_transform(data: np.ndarray) -> np.ndarray:
-        DataTransformer._check_positive(data, '自然对数')
-        return np.log(data)
+    def _fit_log(self, data: np.ndarray) -> None:
+        """拟合对数变换参数（自动计算平移量使数据为正）。"""
+        flat_data = data.flatten()
+        min_val = np.min(flat_data)
 
-    @staticmethod
-    def _log10_transform(data: np.ndarray) -> np.ndarray:
-        DataTransformer._check_positive(data, 'log10')
-        return np.log10(data)
+        if min_val <= 0:
+            self._shift_ = 1.0 - min_val
+        else:
+            self._shift_ = 0.0
 
-    @staticmethod
-    def _log2_transform(data: np.ndarray) -> np.ndarray:
-        DataTransformer._check_positive(data, 'log2')
-        return np.log2(data)
+        self._lambda_ = None
+
+    def _ln_transform(self, data: np.ndarray) -> np.ndarray:
+        shifted = data + self._shift_
+        if np.any(shifted <= 0):
+            raise ValueError("自然对数变换要求所有数据严格为正（> 0），请检查 shift 参数或拟合数据")
+        return np.log(shifted)
+
+    def _log10_transform(self, data: np.ndarray) -> np.ndarray:
+        shifted = data + self._shift_
+        if np.any(shifted <= 0):
+            raise ValueError("log10变换要求所有数据严格为正（> 0），请检查 shift 参数或拟合数据")
+        return np.log10(shifted)
+
+    def _log2_transform(self, data: np.ndarray) -> np.ndarray:
+        shifted = data + self._shift_
+        if np.any(shifted <= 0):
+            raise ValueError("log2变换要求所有数据严格为正（> 0），请检查 shift 参数或拟合数据")
+        return np.log2(shifted)
 
     @staticmethod
     def _sqrt_transform(data: np.ndarray) -> np.ndarray:
@@ -165,17 +183,14 @@ class DataTransformer:
             return np.log(shifted)
         return (np.power(shifted, lam) - 1.0) / lam
 
-    @staticmethod
-    def _ln_inverse(data: np.ndarray) -> np.ndarray:
-        return np.exp(data)
+    def _ln_inverse(self, data: np.ndarray) -> np.ndarray:
+        return np.exp(data) - self._shift_
 
-    @staticmethod
-    def _log10_inverse(data: np.ndarray) -> np.ndarray:
-        return np.power(10.0, data)
+    def _log10_inverse(self, data: np.ndarray) -> np.ndarray:
+        return np.power(10.0, data) - self._shift_
 
-    @staticmethod
-    def _log2_inverse(data: np.ndarray) -> np.ndarray:
-        return np.power(2.0, data)
+    def _log2_inverse(self, data: np.ndarray) -> np.ndarray:
+        return np.power(2.0, data) - self._shift_
 
     @staticmethod
     def _sqrt_inverse(data: np.ndarray) -> np.ndarray:
@@ -228,14 +243,13 @@ class DataTransformer:
             )
 
     @staticmethod
-    def _validate_input_positivity(data: np.ndarray, method: str) -> None:
-        if method in DataTransformer.VALID_LOG_BASES:
-            DataTransformer._check_positive(data, method)
-
-    @staticmethod
-    def _check_positive(data: np.ndarray, name: str) -> None:
-        if np.any(data <= 0):
-            raise ValueError(f"{name}变换要求所有数据严格为正（> 0）")
+    def _validate_input_constraints(data: np.ndarray, method: str) -> None:
+        if method == 'sqrt':
+            if np.any(data < 0):
+                raise ValueError("平方根变换要求所有数据非负（>= 0）")
+        elif method == 'reciprocal':
+            if np.any(data == 0):
+                raise ValueError("倒数变换要求所有数据非零（≠ 0）")
 
     def get_params(self) -> dict:
         """获取变换器的所有参数。"""
@@ -396,19 +410,20 @@ class VarianceStabilizer:
         return "\n".join(lines)
 
 
-def log_transform(data: np.ndarray, base: str = 'ln') -> np.ndarray:
+def log_transform(data: np.ndarray, base: str = 'ln') -> Tuple[np.ndarray, float]:
     """
-    便捷函数：对数变换。
+    便捷函数：对数变换（自动平移非正数数据）。
 
     Args:
         data: 输入数据
         base: 对数基底，'ln', 'log10', 'log2'
 
     Returns:
-        变换后的数据
+        (变换后的数据, shift平移量)
     """
     transformer = DataTransformer()
-    return transformer.fit_transform(data, base)
+    transformed = transformer.fit_transform(data, base)
+    return transformed, transformer.shift_
 
 
 def sqrt_transform(data: np.ndarray) -> np.ndarray:

@@ -140,8 +140,9 @@ def demo_utility_functions():
     print(f"\n原始指数分布数据统计:")
     print(f"  均值: {np.mean(data):.4f}")
 
-    result_ln = log_transform(data, base='ln')
+    result_ln, shift_ln = log_transform(data, base='ln')
     print(f"\nlog_transform(data, base='ln'):")
+    print(f"  shift: {shift_ln:.6f}")
     print(f"  均值: {np.mean(result_ln):.4f}")
 
     result_sqrt = sqrt_transform(data)
@@ -159,17 +160,55 @@ def demo_utility_functions():
     print(f"  均值: {np.mean(result_bc):.4f}")
 
 
+def demo_log_with_negative_data():
+    print("\n" + "=" * 70)
+    print("示例 7: 对数变换自动平移非正数数据".center(70))
+    print("=" * 70)
+
+    data_with_neg = np.array([-5.0, 0.0, 1.0, 2.5, 3.7, 10.2])
+    print(f"\n原始数据（含负数和零）:")
+    print(f"  {data_with_neg}")
+    print(f"  最小值: {np.min(data_with_neg):.4f}")
+    print(f"  最大值: {np.max(data_with_neg):.4f}")
+
+    transformer = DataTransformer()
+    ln_transformed = transformer.fit_transform(data_with_neg.copy(), 'ln')
+    print(f"\n 自然对数变换结果:")
+    print(f"  shift 平移量: {transformer.shift_:.6f}")
+    print(f"  平移后最小值: {np.min(data_with_neg + transformer.shift_):.6f} (应 > 0)")
+    print(f"  变换结果: {ln_transformed.round(6)}")
+
+    recovered = transformer.inverse_transform(ln_transformed)
+    print(f"\n 逆变换恢复:")
+    print(f"  恢复结果: {recovered.round(6)}")
+    print(f"  与原始数据最大误差: {np.max(np.abs(data_with_neg - recovered)):.2e}")
+
+    for base in ['ln', 'log10', 'log2']:
+        result, shift = log_transform(data_with_neg.copy(), base=base)
+        print(f"\n {base} 变换 (便捷函数):")
+        print(f"  shift = {shift:.6f}, 结果均值 = {np.mean(result):.6f}")
+
+    data_all_neg = np.array([-10, -5, -3, -1])
+    t = DataTransformer()
+    result = t.fit_transform(data_all_neg.copy(), 'log10')
+    recovered = t.inverse_transform(result)
+    print(f"\n 全负数数组 log10 变换:")
+    print(f"  原始: {data_all_neg}")
+    print(f"  shift: {t.shift_:.6f}")
+    print(f"  变换: {result.round(6)}")
+    print(f"  恢复: {recovered.round(6)}")
+    print(f"  误差: {np.max(np.abs(data_all_neg - recovered)):.2e}")
+
+
 def demo_edge_cases():
     print("\n" + "=" * 70)
     print("示例 6: 边界情况与错误处理".center(70))
     print("=" * 70)
 
-    print("\n测试非正数数据的对数变换:")
+    print("\n测试非正数数据的对数变换（现在自动平移，不再抛错）:")
     data_with_neg = np.array([1, 2, -1, 4])
-    try:
-        log_transform(data_with_neg, 'ln')
-    except ValueError as e:
-        print(f"  捕获异常: {e}")
+    result, shift = log_transform(data_with_neg, 'ln')
+    print(f"  成功！shift = {shift:.6f}, 变换结果均值: {np.mean(result):.6f}")
 
     print("\n测试未拟合就调用 transform:")
     try:
@@ -213,4 +252,5 @@ if __name__ == '__main__':
     demo_variance_stabilizer()
     demo_utility_functions()
     demo_edge_cases()
+    demo_log_with_negative_data()
     print("\n所有示例执行完成！")
